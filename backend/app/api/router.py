@@ -10,7 +10,7 @@ from app.models.case import Case
 from app.models.finding import Finding
 from app.models.analysis_run import AnalysisRun
 from app.schemas.response import DashboardSummary
-from app.analytics.engine import calculate_entity_supervisory_risk
+from app.analytics.engine import calculate_entity_supervisory_risk, get_authoritative_entity_metrics
 
 from app.api.entities import router as entities_router
 from app.api.ingestion import router as ingestion_router
@@ -144,12 +144,17 @@ def get_dashboard_summary(
     total_alerts = alert_q.count()
     total_cases = case_q.count()
 
-    # Determine entities requiring attention (CRITICAL/HIGH in latest run)
+    # Authoritative determination of entities requiring attention (Section 5)
     entities_requiring_attention = 0
+    eff_period = assessment_period_id or (latest_run.assessment_period_id if latest_run else "2026-Q2")
     for ent in entities:
-        ent_findings = [f for f in findings if f.entity_id == ent.entity_id]
-        level, score = calculate_entity_supervisory_risk(ent_findings)
-        if level in ["CRITICAL", "HIGH"]:
+        m = get_authoritative_entity_metrics(
+            db,
+            ent.entity_id,
+            run_id=latest_run.run_id if latest_run else None,
+            assessment_period_id=eff_period
+        )
+        if m.get("supervisory_attention_level") in ["CRITICAL", "HIGH"]:
             entities_requiring_attention += 1
 
     return DashboardSummary(

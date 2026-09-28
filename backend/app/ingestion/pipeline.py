@@ -13,6 +13,7 @@ from app.models.case import Case
 from app.models.ingestion import IngestionBatch
 from app.models.audit import AuditLog
 from app.schemas.ingestion import IngestionValidationReport
+from app.time_utils import utc_now
 from app.ingestion.detector import (
     detect_file_type, inspect_csv_columns_and_sample,
     inspect_json_columns_and_sample, detect_schema_category,
@@ -45,7 +46,7 @@ def append_audit_event(
 ) -> AuditLog:
     last_audit = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
     prev_hash = last_audit.event_hash if last_audit else "GENESIS_HASH_SAT_SA_2026"
-    ts = datetime.utcnow()
+    ts = utc_now()
     details_str = json.dumps(details)
     ev_hash = AuditLog.calculate_hash(prev_hash, ts, action, actor, details_str)
 

@@ -5,13 +5,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.database import get_db
-from app.models.entity import Entity, Asset, AssessmentPeriod
+from app.models.entity import Entity, Asset
 from app.models.alert import Alert
 from app.models.case import Case
 from app.models.finding import Finding
 from app.models.analysis_run import AnalysisRun, CapabilityScore
 from app.schemas.response import EntitySupervisoryCard
-from app.analytics.engine import calculate_supervisory_attention_indicator
+from app.analytics.engine import get_authoritative_entity_metrics
 
 router = APIRouter(prefix="/entities", tags=["Entities"])
 
@@ -21,97 +21,50 @@ def list_entities(
     period_id: Optional[str] = Query("2026-Q2"),
     db: Session = Depends(get_db)
 ):
+    """Returns authoritative supervisory entity cards sorted by attention score (Section 5)."""
     entities = db.query(Entity).all()
     results = []
 
-    # Get latest run for period
+    # Get latest completed run for period
     latest_run = db.query(AnalysisRun).filter(
         AnalysisRun.assessment_period_id == period_id,
-        AnalysisRun.is_latest.is_(True)
+        AnalysisRun.is_latest.is_(True),
+        AnalysisRun.status == "COMPLETED"
     ).first()
     if not latest_run:
-        latest_run = db.query(AnalysisRun).order_by(AnalysisRun.timestamp.desc()).first()
+        latest_run = db.query(AnalysisRun).filter(AnalysisRun.status == "COMPLETED").order_by(AnalysisRun.timestamp.desc()).first()
 
     run_id = latest_run.run_id if latest_run else None
 
     for ent in entities:
-        eid = ent.entity_id
-        declared_assets = ent.monitored_asset_count or db.query(Asset).filter(Asset.entity_id == eid).count() or 1
-
-        reporting_assets_cnt = db.query(Alert.asset_id).filter(
-            Alert.entity_id == eid,
-            Alert.assessment_period_id == period_id,
-            Alert.asset_id.isnot(None)
-        ).distinct().count()
-
-        if reporting_assets_cnt == 0:
-            reporting_assets_cnt = db.query(Alert.asset_id).filter(
-                Alert.entity_id == eid,
-                Alert.asset_id.isnot(None)
-            ).distinct().count()
-
-        coverage_gap = max(0.0, ((declared_assets - reporting_assets_cnt) / declared_assets) * 100.0)
-
-        total_alerts = db.query(Alert).filter(
-            Alert.entity_id == eid,
-            Alert.assessment_period_id == period_id
-        ).count()
-        if total_alerts == 0:
-            total_alerts = db.query(Alert).filter(Alert.entity_id == eid).count()
-
-        total_cases = db.query(Case).filter(
-            Case.entity_id == eid,
-            Case.assessment_period_id == period_id
-        ).count()
-        if total_cases == 0:
-            total_cases = db.query(Case).filter(Case.entity_id == eid).count()
-
-        # RUN ISOLATION: Only fetch findings belonging to the latest run!
-        if run_id:
-            findings = db.query(Finding).filter(
-                Finding.entity_id == eid,
-                Finding.run_id == run_id
-            ).all()
-            cap_scores = db.query(CapabilityScore).filter(
-                CapabilityScore.entity_id == eid,
-                CapabilityScore.run_id == run_id
-            ).all()
-        else:
-            findings = []
-            cap_scores = []
-
-        execution_gaps = sum(1 for f in findings if f.category == "EXECUTION_GAP")
-        negative_space = sum(1 for f in findings if f.category == "NEGATIVE_SPACE")
-        anomalies = sum(1 for f in findings if f.category == "ANOMALY")
-
-        level, score, _ = calculate_supervisory_attention_indicator(findings, cap_scores)
-
-        concerns = []
-        for f in findings:
-            if f.severity in ["CRITICAL", "HIGH"] and len(concerns) < 3:
-                concerns.append(f.finding_type.replace("_", " ").title())
-        if not concerns:
-            concerns = ["No critical operational weaknesses identified"]
+        m = get_authoritative_entity_metrics(
+            db=db,
+            entity_id=ent.entity_id,
+            run_id=run_id,
+            assessment_period_id=period_id or "2026-Q2"
+        )
+        if not m:
+            continue
 
         results.append(EntitySupervisoryCard(
-            entity_id=eid,
-            name=ent.name,
-            sector=ent.sector,
-            claimed_tier=ent.claimed_tier,
-            monitored_asset_count=declared_assets,
-            active_reporting_assets=reporting_assets_cnt,
-            coverage_gap_pct=round(coverage_gap, 1),
-            total_alerts=total_alerts,
-            total_cases=total_cases,
-            execution_gaps_count=execution_gaps,
-            negative_space_count=negative_space,
-            anomalies_count=anomalies,
-            risk_level=level,
-            risk_score=score,
-            primary_concerns=concerns
+            entity_id=m["entity_id"],
+            name=m["name"],
+            sector=m["sector"],
+            claimed_tier=m["claimed_tier"],
+            monitored_asset_count=m["monitored_asset_count"],
+            active_reporting_assets=m["active_reporting_assets"],
+            coverage_gap_pct=m["coverage_gap_pct"],
+            total_alerts=m["total_alerts"],
+            total_cases=m["total_cases"],
+            execution_gaps_count=m["execution_gaps_count"],
+            negative_space_count=m["negative_space_count"],
+            anomalies_count=m["anomalies_count"],
+            risk_level=m["supervisory_attention_level"],
+            risk_score=m["supervisory_attention_score"],
+            primary_concerns=m["primary_concerns"]
         ))
 
-    # Sort so highest risk entities appear first
+    # Sort so highest attention entities appear first
     results.sort(key=lambda x: x.risk_score, reverse=True)
     return results
 
@@ -122,40 +75,30 @@ def get_entity_detail(
     period_id: Optional[str] = Query("2026-Q2"),
     db: Session = Depends(get_db)
 ):
+    """Returns authoritative detailed supervisory profile for a CSE (Section 18)."""
     ent = db.query(Entity).filter(Entity.entity_id == entity_id).first()
     if not ent:
         raise HTTPException(status_code=404, detail=f"Entity '{entity_id}' not found.")
 
+    # Get latest completed run for this period
+    latest_run = db.query(AnalysisRun).filter(
+        AnalysisRun.assessment_period_id == period_id,
+        AnalysisRun.is_latest.is_(True),
+        AnalysisRun.status == "COMPLETED"
+    ).first()
+    if not latest_run:
+        latest_run = db.query(AnalysisRun).filter(AnalysisRun.status == "COMPLETED").order_by(AnalysisRun.timestamp.desc()).first()
+
+    run_id = latest_run.run_id if latest_run else None
+
+    auth_metrics = get_authoritative_entity_metrics(
+        db=db,
+        entity_id=entity_id,
+        run_id=run_id,
+        assessment_period_id=period_id or "2026-Q2"
+    )
+
     assets = db.query(Asset).filter(Asset.entity_id == entity_id).all()
-    declared_assets = ent.monitored_asset_count or len(assets) or 1
-
-    reporting_assets_cnt = db.query(Alert.asset_id).filter(
-        Alert.entity_id == entity_id,
-        Alert.assessment_period_id == period_id,
-        Alert.asset_id.isnot(None)
-    ).distinct().count()
-
-    if reporting_assets_cnt == 0:
-        reporting_assets_cnt = db.query(Alert.asset_id).filter(
-            Alert.entity_id == entity_id,
-            Alert.asset_id.isnot(None)
-        ).distinct().count()
-
-    coverage_gap = max(0.0, ((declared_assets - reporting_assets_cnt) / declared_assets) * 100.0)
-
-    total_alerts = db.query(Alert).filter(
-        Alert.entity_id == entity_id,
-        Alert.assessment_period_id == period_id
-    ).count()
-    if total_alerts == 0:
-        total_alerts = db.query(Alert).filter(Alert.entity_id == entity_id).count()
-
-    total_cases = db.query(Case).filter(
-        Case.entity_id == entity_id,
-        Case.assessment_period_id == period_id
-    ).count()
-    if total_cases == 0:
-        total_cases = db.query(Case).filter(Case.entity_id == entity_id).count()
 
     # Severity distribution
     sev_dist = db.query(
@@ -173,16 +116,7 @@ def get_entity_detail(
         Alert.assessment_period_id == period_id
     ).group_by(Alert.category).all()
 
-    # RUN ISOLATION: Fetch findings only for the latest run
-    latest_run = db.query(AnalysisRun).filter(
-        AnalysisRun.assessment_period_id == period_id,
-        AnalysisRun.is_latest.is_(True)
-    ).first()
-    if not latest_run:
-        latest_run = db.query(AnalysisRun).order_by(AnalysisRun.timestamp.desc()).first()
-
-    run_id = latest_run.run_id if latest_run else None
-
+    # Fetch run-isolated findings and capability scores
     findings = db.query(Finding).filter(
         Finding.entity_id == entity_id,
         Finding.run_id == run_id
@@ -193,8 +127,6 @@ def get_entity_detail(
         CapabilityScore.run_id == run_id
     ).all() if run_id else []
 
-    level, score, breakdown = calculate_supervisory_attention_indicator(findings, cap_scores)
-
     return {
         "entity_id": ent.entity_id,
         "name": ent.name,
@@ -204,21 +136,25 @@ def get_entity_detail(
         "contact_email": ent.contact_email,
         "assessment_period_id": period_id,
         "active_run_id": run_id,
-        "monitored_asset_count": declared_assets,
-        "active_reporting_assets": reporting_assets_cnt,
-        "coverage_gap_pct": round(coverage_gap, 1),
-        "total_alerts": total_alerts,
-        "total_cases": total_cases,
-        "supervisory_attention_level": level,
-        "supervisory_attention_score": score,
-        "attention_breakdown": breakdown,
+        "monitored_asset_count": auth_metrics.get("monitored_asset_count", 0),
+        "active_reporting_assets": auth_metrics.get("active_reporting_assets", 0),
+        "coverage_gap_pct": auth_metrics.get("coverage_gap_pct", 0.0),
+        "total_alerts": auth_metrics.get("total_alerts", 0),
+        "total_cases": auth_metrics.get("total_cases", 0),
+        "supervisory_attention_level": auth_metrics.get("supervisory_attention_level", "LOW"),
+        "supervisory_attention_score": auth_metrics.get("supervisory_attention_score", 0.0),
+        "attention_breakdown": auth_metrics.get("score_breakdown", {}),
         "capability_dimensions": [
             {
                 "dimension": cs.dimension,
                 "score": cs.score,
                 "status": cs.status,
                 "peer_median": cs.peer_median,
-                "deviation": cs.deviation
+                "deviation": cs.deviation,
+                "confidence": cs.confidence,
+                "trend": cs.trend,
+                "observed_metrics": json.loads(cs.observed_metrics_json) if cs.observed_metrics_json else None,
+                "baseline": json.loads(cs.baseline_json) if cs.baseline_json else None
             } for cs in cap_scores
         ],
         "severity_distribution": {k: v for k, v in sev_dist},
@@ -240,12 +176,14 @@ def get_entity_detail(
                 "category": f.category,
                 "severity": f.severity,
                 "confidence": f.confidence,
+                "rule_id": f.rule_id,
                 "reason": f.reason,
                 "evidence_summary": f.evidence_summary,
                 "observed": json.loads(f.observed_value_json) if f.observed_value_json else None,
                 "expected": json.loads(f.expected_value_json) if f.expected_value_json else None,
                 "recommended_review_area": f.recommended_review_area,
-                "status": f.status
+                "status": f.status,
+                "evidence_count": len(f.evidence_links)
             } for f in findings
         ]
     }

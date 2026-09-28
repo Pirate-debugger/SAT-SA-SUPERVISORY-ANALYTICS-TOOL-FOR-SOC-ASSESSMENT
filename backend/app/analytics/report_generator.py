@@ -1,9 +1,8 @@
 import json
-from datetime import datetime
 from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
 
-from app.config import APP_NAME, APP_VERSION, RULESET_VERSION, ANALYTICS_VERSION
+from app.config import APP_NAME, APP_VERSION, RULESET_VERSION, ANALYTICS_VERSION, MODEL_VERSION
 from app.models.analysis_run import AnalysisRun, CapabilityScore
 from app.models.entity import Entity, AssessmentPeriod, DatasetProvenance
 from app.models.finding import Finding
@@ -12,7 +11,10 @@ from app.analytics.peer_benchmarking import evaluate_peer_benchmarking
 from app.analytics.anomaly_engine import detect_operational_anomalies
 from app.analytics.temporal_drift import evaluate_temporal_drift
 from app.analytics.sample_prioritizer import prioritize_alert_review_samples
-from app.analytics.validation_harness import run_expert_validation_benchmark
+from app.analytics.validation_harness import run_synthetic_ground_truth_benchmark, evaluate_expert_review_mode
+from app.analytics.data_quality import evaluate_dataset_quality
+from app.analytics.engine import get_authoritative_entity_metrics
+from app.time_utils import utc_now
 
 
 def generate_supervisory_report(
@@ -21,7 +23,8 @@ def generate_supervisory_report(
     assessment_period_id: str = "2026-Q2"
 ) -> Dict[str, Any]:
     """
-    Generates a formal 18-section supervisory assessment report.
+    Generates a formal supervisory assessment report with prominent synthetic data disclaimer (Sections 30 & 31).
+    All statistical signals are classified accurately as POTENTIAL FINDINGS / SUPERVISORY SIGNALS requiring human review.
     """
     # 1. Fetch Run
     if run_id:
@@ -29,13 +32,14 @@ def generate_supervisory_report(
     else:
         run = db.query(AnalysisRun).filter(
             AnalysisRun.assessment_period_id == assessment_period_id,
-            AnalysisRun.is_latest.is_(True)
+            AnalysisRun.is_latest.is_(True),
+            AnalysisRun.status == "COMPLETED"
         ).first()
         if not run:
-            run = db.query(AnalysisRun).order_by(AnalysisRun.timestamp.desc()).first()
+            run = db.query(AnalysisRun).filter(AnalysisRun.status == "COMPLETED").order_by(AnalysisRun.timestamp.desc()).first()
 
     if not run:
-        return {"error": "No assessment runs found in database."}
+        return {"error": "No completed assessment runs found in database."}
 
     active_run_id = run.run_id
     period_id = run.assessment_period_id or assessment_period_id
@@ -47,45 +51,49 @@ def generate_supervisory_report(
     provenances = db.query(DatasetProvenance).filter(DatasetProvenance.assessment_period_id == period_id).all()
     review_items = db.query(ReviewItem).filter(ReviewItem.assessment_period_id == period_id).all()
 
-    # Analytics sub-reports
+    # Analytical sub-modules
+    data_quality = evaluate_dataset_quality(db, assessment_period_id=period_id)
     peers = evaluate_peer_benchmarking(db, assessment_period_id=period_id)
-    anomalies = detect_operational_anomalies(db, assessment_period_id=period_id)
+    anomalies_summary, _ = detect_operational_anomalies(db, assessment_period_id=period_id, run_id=active_run_id)
     trends = evaluate_temporal_drift(db)
-    samples = prioritize_alert_review_samples(db, assessment_period_id=period_id, limit=10)
-    validation = run_expert_validation_benchmark(db, run_id=active_run_id)
+    samples = prioritize_alert_review_samples(db, assessment_period_id=period_id, limit=20)
+    validation_mode_a = run_synthetic_ground_truth_benchmark(db, run_id=active_run_id)
+    validation_mode_b = evaluate_expert_review_mode(db, run_id=active_run_id)
 
-    # Attention entities
-    attention_entities = []
-    run_summary = json.loads(run.summary_json) if run.summary_json else {}
-    att_summary = run_summary.get("entity_attention_summary", {})
+    # Authoritative entity metrics
+    entity_evaluations = [
+        get_authoritative_entity_metrics(db, ent.entity_id, run_id=active_run_id, assessment_period_id=period_id)
+        for ent in entities
+    ]
 
-    for eid, info in att_summary.items():
-        if info.get("supervisory_attention_level") in ["CRITICAL", "HIGH"]:
-            attention_entities.append({
-                "entity_id": eid,
-                "name": info.get("entity_name"),
-                "sector": info.get("sector"),
-                "attention_level": info.get("supervisory_attention_level"),
-                "attention_score": info.get("supervisory_attention_score"),
-                "gaps_count": info.get("execution_gaps"),
-                "negative_space_count": info.get("negative_space")
-            })
+    attention_entities = [
+        e for e in entity_evaluations
+        if e.get("supervisory_attention_level") in ["CRITICAL", "HIGH"]
+    ]
 
-    # Last audit hash
     last_audit = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
 
     report_data = {
         "report_metadata": {
             "title": "SUPERVISORY SOC OPERATIONAL ASSESSMENT REPORT",
-            "classification": "OFFICIAL / SUPERVISORY USE ONLY (AIR-GAPPED)",
+            # Prominent classification banner (Section 31)
+            "classification": "DEMO / SYNTHETIC DATA — NOT FOR OPERATIONAL USE",
+            "classification_banner": "DEMO / SYNTHETIC DATA — NOT FOR OPERATIONAL USE",
+            "mode": "AIR_GAPPED_OFFLINE_LOCAL",
             "app_name": APP_NAME,
             "system_version": APP_VERSION,
             "ruleset_version": RULESET_VERSION,
             "analytics_version": ANALYTICS_VERSION,
+            "model_version": MODEL_VERSION,
             "run_id": active_run_id,
             "assessment_period": period_id,
-            "generated_timestamp": datetime.utcnow().isoformat(),
-            "disclaimer": "PROTOTYPE ASSESSMENT — ALL DEMO DATA CLEARLY LABELED SYNTHETIC"
+            "generated_timestamp": utc_now().isoformat(),
+            "disclaimer": (
+                "DEMO / SYNTHETIC DATA — NOT FOR OPERATIONAL USE. "
+                "This report was generated in a local air-gapped prototype environment. "
+                "All statistical deviations represent potential supervisory signals requiring human confirmation. "
+                "Not real government data."
+            )
         },
         "sections": {
             "1_executive_summary": {
@@ -95,89 +103,146 @@ def generate_supervisory_report(
                 "critical_findings_count": sum(1 for f in findings if f.severity == "CRITICAL"),
                 "high_findings_count": sum(1 for f in findings if f.severity == "HIGH"),
                 "core_supervisory_verdict": (
-                    f"{len(attention_entities)} out of {len(entities)} Critical Sector Entities exhibit notable execution gaps "
-                    f"or negative space telemetry blind spots inconsistent with their declared security tiers."
+                    f"{len(attention_entities)} out of {len(entities)} Critical Sector Entities exhibit notable execution gaps, "
+                    f"telemetry negative space, or operational anomalies requiring supervisory inquiry."
                 )
             },
-            "2_scope_and_entities": [
-                {
-                    "entity_id": e.entity_id,
-                    "name": e.name,
-                    "sector": e.sector,
-                    "claimed_tier": e.claimed_tier,
-                    "monitored_asset_count": e.monitored_asset_count,
-                    "soc_model": e.soc_model
-                } for e in entities
-            ],
-            "3_dataset_provenance": [
-                {
-                    "provenance_id": p.provenance_id,
-                    "filename": p.filename,
-                    "sha256_hash": p.file_hash,
-                    "records_ingested": p.record_count,
-                    "data_quality_pct": p.data_quality_pct,
-                    "import_time": p.import_timestamp.isoformat() if p.import_timestamp else None
-                } for p in provenances
-            ],
-            "4_entities_requiring_attention": attention_entities,
-            "5_capability_assessment": [
+            "2_scope_and_entities": {
+                "entities": [
+                    {
+                        "entity_id": ent.entity_id,
+                        "name": ent.name,
+                        "sector": ent.sector,
+                        "claimed_tier": ent.claimed_tier,
+                        "monitored_asset_count": ent.monitored_asset_count,
+                        "soc_model": ent.soc_model
+                    }
+                    for ent in entities
+                ]
+            },
+            "3_dataset_and_provenance": {
+                "provenance_records": [
+                    {
+                        "filename": p.filename,
+                        "file_hash_sha256": p.file_hash,
+                        "source_name": p.source_name,
+                        "record_count": p.record_count,
+                        "data_quality_pct": p.data_quality_pct,
+                        "import_timestamp": p.import_timestamp.isoformat() if p.import_timestamp else None
+                    }
+                    for p in provenances
+                ]
+            },
+            "4_data_quality_evaluation": data_quality,
+            "5_entities_requiring_attention": attention_entities,
+            "6_eight_dimension_capability_assessment": [
                 {
                     "entity_id": cs.entity_id,
                     "dimension": cs.dimension,
                     "score": cs.score,
                     "status": cs.status,
-                    "peer_deviation": cs.deviation
-                } for cs in capability_scores
+                    "peer_median": cs.peer_median,
+                    "deviation": cs.deviation,
+                    "confidence": cs.confidence,
+                    "trend": cs.trend
+                }
+                for cs in capability_scores
             ],
-            "6_execution_gaps": [
+            "7_execution_gaps": [
                 {
                     "finding_id": f.finding_id,
                     "entity_id": f.entity_id,
                     "finding_type": f.finding_type,
                     "severity": f.severity,
                     "confidence": f.confidence,
+                    "rule_id": f.rule_id,
                     "reason": f.reason,
-                    "observed": json.loads(f.observed_value_json) if f.observed_value_json else None,
-                    "expected": json.loads(f.expected_value_json) if f.expected_value_json else None,
-                    "recommended_review_area": f.recommended_review_area
-                } for f in findings if f.category == "EXECUTION_GAP"
+                    "evidence_summary": f.evidence_summary,
+                    "recommended_review_area": f.recommended_review_area,
+                    "sample_size": f.sample_size,
+                    "evidence_records_count": len(f.evidence_links)
+                }
+                for f in findings if f.category == "EXECUTION_GAP"
             ],
-            "7_negative_space": [
+            "8_negative_space": [
                 {
                     "finding_id": f.finding_id,
                     "entity_id": f.entity_id,
                     "finding_type": f.finding_type,
                     "severity": f.severity,
                     "confidence": f.confidence,
+                    "rule_id": f.rule_id,
+                    "reason": f.reason,
+                    "evidence_summary": f.evidence_summary,
+                    "recommended_review_area": f.recommended_review_area,
+                    "evidence_records_count": len(f.evidence_links)
+                }
+                for f in findings if f.category == "NEGATIVE_SPACE"
+            ],
+            "9_operational_anomalies": [
+                {
+                    "finding_id": f.finding_id,
+                    "entity_id": f.entity_id,
+                    "finding_type": f.finding_type,
+                    "severity": f.severity,
+                    "confidence": f.confidence,
+                    "rule_id": f.rule_id,
                     "reason": f.reason,
                     "evidence_summary": f.evidence_summary,
                     "recommended_review_area": f.recommended_review_area
-                } for f in findings if f.category == "NEGATIVE_SPACE"
+                }
+                for f in findings if f.category == "ANOMALY"
             ],
-            "8_peer_benchmarking": peers.get("peer_baselines", {}),
-            "9_operational_anomalies": anomalies.get("anomalies_by_entity", {}),
-            "10_temporal_trends": trends.get("entity_trends", {}),
-            "11_prioritized_alert_samples": samples,
-            "12_supervisory_review_status": [
+            "10_peer_benchmarking": peers,
+            "11_temporal_trends_and_drift": trends,
+            "12_prioritized_review_samples": samples,
+            "13_review_queue_and_actions": [
                 {
                     "review_id": r.review_id,
                     "finding_id": r.finding_id,
                     "entity_id": r.entity_id,
-                    "priority": r.priority,
                     "status": r.status,
-                    "notes": r.notes
-                } for r in review_items
+                    "priority": r.priority,
+                    "assigned_reviewer": r.assigned_reviewer,
+                    "notes": r.notes,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None
+                }
+                for r in review_items
             ],
-            "13_validation_performance": validation.get("metrics", {}),
-            "14_limitations_and_caveats": [
-                "Assessment is strictly based on periodic batch submissions; absence of logs may reflect collection outages rather than active adversaries.",
-                "Peer baselines are derived from available cohort data; small peer sample sizes (< 3) are marked 'UNABLE TO ASSESS'.",
-                "Supervisory attention scores guide manual audit prioritization and do not constitute legal compliance certifications."
+            "14_validation_framework": {
+                "synthetic_ground_truth_benchmark": validation_mode_a,
+                "human_expert_review_mode": validation_mode_b
+            },
+            "15_supervisory_methodology": {
+                "framework": "Offline-First Deterministic + Statistical Baseline Supervisory Assessment",
+                "ruleset_version": RULESET_VERSION,
+                "capability_model": "8 Official SIH26157 Supervisory Dimensions",
+                "negative_space_approach": "Expectation model contrasting declared scope against observed telemetry",
+                "anomaly_engine": "Adaptive Isolation Forest + Robust MAD modified z-scores",
+                "principles": [
+                    "Explainable, deterministic calculations with verifiable metrics",
+                    "Direct evidence drill-down from finding to raw source records",
+                    "Supervisor remains authoritative final decision-maker"
+                ]
+            },
+            "16_limitations": [
+                "Assessment is strictly based on periodic batch submissions rather than real-time wire taps",
+                "Statistical outliers represent potential deviations requiring human inspection, not proven infractions",
+                "Sensor blind spots cannot be independently verified without physical network tap validation"
             ],
-            "15_audit_verification": {
-                "latest_event_hash": last_audit.event_hash if last_audit else "N/A",
-                "previous_event_hash": last_audit.previous_event_hash if last_audit else "N/A",
-                "integrity_algorithm": "SHA-256 Cryptographic Hash Chain"
+            "17_tamper_evident_audit_information": {
+                "latest_event_hash": last_audit.event_hash if last_audit else None,
+                "previous_event_hash": last_audit.previous_event_hash if last_audit else None,
+                "total_audited_events": db.query(AuditLog).count()
+            },
+            "18_analysis_run_information": {
+                "run_id": run.run_id,
+                "assessment_period_id": run.assessment_period_id,
+                "timestamp": run.timestamp.isoformat() if run.timestamp else None,
+                "execution_time_seconds": run.execution_time_seconds,
+                "config_hash": run.config_hash,
+                "alerts_analyzed": run.alerts_analyzed_count,
+                "cases_analyzed": run.cases_analyzed_count
             }
         }
     }
@@ -187,90 +252,86 @@ def generate_supervisory_report(
 
 def generate_markdown_supervisory_report(report_data: Dict[str, Any]) -> str:
     """
-    Renders structured report data into clean GitHub-flavored Markdown.
+    Renders report_data as a clean, professional Markdown supervisory audit report (Section 30).
+    Includes prominent classification and disclaimers (Section 31).
     """
     meta = report_data.get("report_metadata", {})
     sec = report_data.get("sections", {})
-    exec_sum = sec.get("1_executive_summary", {})
 
-    md = f"""# {meta.get('title')}
-**System**: {meta.get('app_name')} ({meta.get('system_version')})
-**Assessment Run ID**: `{meta.get('run_id')}` | **Assessment Period**: `{meta.get('assessment_period')}`
-**Ruleset**: `{meta.get('ruleset_version')}` | **Date**: {meta.get('generated_timestamp')}
-**Mode**: {meta.get('classification')}
+    lines = [
+        f"# {meta.get('title', 'SUPERVISORY SOC OPERATIONAL ASSESSMENT REPORT')}",
+        "",
+        f"> **CLASSIFICATION**: {meta.get('classification', 'DEMO / SYNTHETIC DATA — NOT FOR OPERATIONAL USE')}",
+        f"> **ASSESSMENT PERIOD**: `{meta.get('assessment_period', '2026-Q2')}` | **RUN ID**: `{meta.get('run_id', 'N/A')}`",
+        f"> **GENERATED AT**: {meta.get('generated_timestamp', '')}",
+        f"> **DISCLAIMER**: {meta.get('disclaimer', '')}",
+        "",
+        "---",
+        "",
+        "## 1. Executive Summary",
+        "",
+        f"- **Entities Evaluated**: {sec.get('1_executive_summary', {}).get('total_entities_evaluated', 0)}",
+        f"- **Entities Requiring Supervisory Attention**: {sec.get('1_executive_summary', {}).get('entities_requiring_attention', 0)}",
+        f"- **Total Supervisory Findings**: {sec.get('1_executive_summary', {}).get('total_findings', 0)} (Critical: {sec.get('1_executive_summary', {}).get('critical_findings_count', 0)}, High: {sec.get('1_executive_summary', {}).get('high_findings_count', 0)})",
+        f"- **Verdict**: {sec.get('1_executive_summary', {}).get('core_supervisory_verdict', '')}",
+        "",
+        "## 2. Data Quality Summary",
+        "",
+        f"- **Completeness**: {sec.get('4_data_quality_evaluation', {}).get('completeness_pct', 0)}%",
+        f"- **Validity**: {sec.get('4_data_quality_evaluation', {}).get('validity_pct', 0)}%",
+        f"- **Timestamp Quality**: {sec.get('4_data_quality_evaluation', {}).get('timestamp_quality_pct', 0)}%",
+        f"- **Evidence Coverage**: {sec.get('4_data_quality_evaluation', {}).get('evidence_coverage_pct', 0)}%",
+        f"- **Analytical Confidence**: {int(sec.get('4_data_quality_evaluation', {}).get('confidence_factor', 1.0) * 100)}%",
+        "",
+        "## 3. Entities Requiring Supervisory Attention",
+        "",
+        "| Entity ID | Name | Sector | Attention Level | Attention Score | Gaps | Negative Space |",
+        "|-----------|------|--------|-----------------|-----------------|------|----------------|"
+    ]
 
-> **Notice**: {meta.get('disclaimer')}
+    for ent in sec.get("5_entities_requiring_attention", []):
+        lines.append(
+            f"| `{ent.get('entity_id')}` | {ent.get('name')} | {ent.get('sector')} | **{ent.get('supervisory_attention_level', ent.get('attention_level'))}** | {ent.get('supervisory_attention_score', ent.get('attention_score'))} | {ent.get('execution_gaps_count', ent.get('gaps_count'))} | {ent.get('negative_space_count')} |"
+        )
 
----
+    lines.extend([
+        "",
+        "## 4. Execution Gaps",
+        ""
+    ])
 
-## 1. Executive Summary
+    for gap in sec.get("7_execution_gaps", []):
+        lines.append(f"### Finding `{gap.get('finding_id')}`: {gap.get('finding_type')}")
+        lines.append(f"- **Entity**: `{gap.get('entity_id')}` | **Severity**: `{gap.get('severity')}` | **Confidence**: {gap.get('confidence')}")
+        lines.append(f"- **Reason**: {gap.get('reason')}")
+        lines.append(f"- **Recommended Review**: {gap.get('recommended_review_area')}")
+        lines.append("")
 
-- **Total Supervised Entities Analyzed**: {exec_sum.get('total_entities_evaluated', 0)}
-- **Entities Requiring Immediate Supervisory Attention**: {exec_sum.get('entities_requiring_attention', 0)}
-- **Total Operational Findings Identified**: {exec_sum.get('total_findings', 0)}
-- **Critical Severity Findings**: {exec_sum.get('critical_findings_count', 0)}
-- **High Severity Findings**: {exec_sum.get('high_findings_count', 0)}
+    lines.extend([
+        "## 5. Negative Space & Coverage Gaps",
+        ""
+    ])
 
-**Supervisory Verdict**:
-{exec_sum.get('core_supervisory_verdict')}
+    for neg in sec.get("8_negative_space", []):
+        lines.append(f"### Finding `{neg.get('finding_id')}`: {neg.get('finding_type')}")
+        lines.append(f"- **Entity**: `{neg.get('entity_id')}` | **Severity**: `{neg.get('severity')}`")
+        lines.append(f"- **Reason**: {neg.get('reason')}")
+        lines.append(f"- **Recommended Review**: {neg.get('recommended_review_area')}")
+        lines.append("")
 
----
+    lines.extend([
+        "## 6. Tamper-Evident Audit Verification",
+        "",
+        f"- **Latest Event Hash (SHA-256)**: `{sec.get('17_tamper_evident_audit_information', {}).get('latest_event_hash')}`",
+        f"- **Previous Event Hash**: `{sec.get('17_tamper_evident_audit_information', {}).get('previous_event_hash')}`",
+        f"- **Total Cryptographically Audited Events**: {sec.get('17_tamper_evident_audit_information', {}).get('total_audited_events')}",
+        "",
+        "---",
+        "*Report end — Generated by SAT-SA Supervisory Analytics Platform*"
+    ])
 
-## 2. Entities Requiring Attention
+    return "\n".join(lines)
 
-| Entity ID | Entity Name | Sector | Attention Level | Attention Score | Gaps | Negative Space |
-|-----------|-------------|--------|-----------------|-----------------|------|----------------|
-"""
 
-    for ent in sec.get("4_entities_requiring_attention", []):
-        md += f"| `{ent['entity_id']}` | {ent['name']} | {ent['sector']} | **{ent['attention_level']}** | {ent['attention_score']}/100 | {ent['gaps_count']} | {ent['negative_space_count']} |\n"
-
-    md += """
----
-
-## 3. Execution Gaps & Procedural Weaknesses
-
-"""
-    for g in sec.get("6_execution_gaps", []):
-        md += f"""### [{g['severity']}] {g['finding_type']} ({g['entity_id']})
-- **Reason**: {g['reason']}
-- **Actionable Guidance**: {g['recommended_review_area']}
-- **Confidence**: {int(g['confidence'] * 100)}%
-
-"""
-
-    md += """---
-
-## 4. Negative Space & Monitoring Coverage Gaps
-
-"""
-    for n in sec.get("7_negative_space", []):
-        md += f"""### [{n['severity']}] {n['finding_type']} ({n['entity_id']})
-- **Reason**: {n['reason']}
-- **Evidence**: {n['evidence_summary']}
-- **Actionable Guidance**: {n['recommended_review_area']}
-
-"""
-
-    md += """---
-
-## 5. Prioritized Alert Review Samples
-
-| Alert ID | Entity | Category | Severity | Closure Time | Priority Score | Review Rationale |
-|----------|--------|----------|----------|--------------|----------------|------------------|
-"""
-    for s in sec.get("11_prioritized_alert_samples", []):
-        md += f"| `{s['alert_id']}` | {s['entity_id']} | {s['category']} | {s['severity']} | {s.get('closure_minutes', 'N/A')}m | {s['priority_score']} | {s['review_rationale']} |\n"
-
-    md += f"""
----
-
-## 6. Audit & Traceability Signature
-
-- **Run ID**: `{meta.get('run_id')}`
-- **Audit Event SHA-256 Hash**: `{sec.get('15_audit_verification', {}).get('latest_event_hash')}`
-- **Previous Event Hash**: `{sec.get('15_audit_verification', {}).get('previous_event_hash')}`
-- **Integrity**: Verified Tamper-Evident Hash Chain
-"""
-
-    return md
+# Alias for backward compatibility
+export_report_to_markdown = generate_markdown_supervisory_report

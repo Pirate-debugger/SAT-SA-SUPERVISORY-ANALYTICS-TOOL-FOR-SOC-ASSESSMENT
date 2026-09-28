@@ -1,7 +1,7 @@
-from datetime import datetime
 from sqlalchemy import Column, String, Integer, Boolean, DateTime, ForeignKey, Float, Text
 from sqlalchemy.orm import relationship
 from app.database import Base
+from app.time_utils import utc_now
 
 
 class AssessmentPeriod(Base):
@@ -12,7 +12,7 @@ class AssessmentPeriod(Base):
     start_date = Column(DateTime, nullable=False)
     end_date = Column(DateTime, nullable=False)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
 
 class DatasetProvenance(Base):
@@ -28,7 +28,7 @@ class DatasetProvenance(Base):
     unknown_fields_summary_json = Column(Text, nullable=True)
     schema_version = Column(String, default="v1.0-canonical")
     mapping_version = Column(String, default="v1.0-auto")
-    import_timestamp = Column(DateTime, default=datetime.utcnow)
+    import_timestamp = Column(DateTime(timezone=True), default=utc_now)
 
 
 class Entity(Base):
@@ -42,7 +42,7 @@ class Entity(Base):
     soc_model = Column(String, default="In-house 24/7 SOC")
     contact_email = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     assets = relationship("Asset", back_populates="entity", cascade="all, delete-orphan")
     alerts = relationship("Alert", back_populates="entity", cascade="all, delete-orphan")
@@ -59,6 +59,6 @@ class Asset(Base):
     criticality = Column(String, default="HIGH")  # CRITICAL, HIGH, MEDIUM, LOW
     asset_type = Column(String, nullable=False)   # SCADA, CORE_ROUTER, PAYMENT_GW, etc.
     expected_monitoring = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     entity = relationship("Entity", back_populates="assets")

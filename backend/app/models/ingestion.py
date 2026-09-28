@@ -1,6 +1,6 @@
-from datetime import datetime
 from sqlalchemy import Column, String, Integer, Float, DateTime, Text
 from app.database import Base
+from app.time_utils import utc_now
 
 
 class IngestionBatch(Base):
@@ -22,4 +22,4 @@ class IngestionBatch(Base):
     missing_fields_json = Column(Text, nullable=True)
     normalization_warnings_json = Column(Text, nullable=True)
     invalid_records_sample_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)

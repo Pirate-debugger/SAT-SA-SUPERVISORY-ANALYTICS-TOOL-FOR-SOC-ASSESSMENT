@@ -87,6 +87,7 @@ def prioritize_alert_review_samples(
                 "escalated": a.escalated,
                 "evidence_present": a.evidence_present,
                 "priority_score": round(score, 1),
+                "why_selected": " • ".join(reasons),
                 "review_rationale": " • ".join(reasons)
             })
 
@@ -99,7 +100,7 @@ def prioritize_alert_review_samples(
 
     for item in scored_alerts:
         cat = item["category"]
-        if category_counts.get(cat, 0) < 3:  # Max 3 per category for diversity
+        if category_counts.get(cat, 0) < 4:  # Max 4 per category for diversity
             diverse_sample.append(item)
             category_counts[cat] = category_counts.get(cat, 0) + 1
             if len(diverse_sample) >= limit:

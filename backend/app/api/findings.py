@@ -33,6 +33,12 @@ def list_findings(
         q = q.filter(Finding.status == status)
     if run_id:
         q = q.filter(Finding.run_id == run_id)
+    else:
+        # RUN ISOLATION (Section 35): Default to latest run findings only
+        from app.models.analysis_run import AnalysisRun
+        latest_run = db.query(AnalysisRun).filter(AnalysisRun.is_latest.is_(True)).first()
+        if latest_run:
+            q = q.filter(Finding.run_id == latest_run.run_id)
 
     findings = q.order_by(Finding.created_at.desc()).all()
     results = []

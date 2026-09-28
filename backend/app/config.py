@@ -13,6 +13,7 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 SYNTHETIC_DIR.mkdir(parents=True, exist_ok=True)
 
 APP_NAME = "SAT-SA: Supervisory Analytics Tool for SOC Assessment"
-APP_VERSION = "0.1.0-phase1"
-RULESET_VERSION = "ruleset-v1.0.0-offline"
-ANALYTICS_VERSION = "analytics-v1.0.0-baseline"
+APP_VERSION = "1.0.0-final"
+RULESET_VERSION = "ruleset-v1.2.0-authoritative"
+ANALYTICS_VERSION = "analytics-v1.2.0-offline"
+MODEL_VERSION = "iso-forest-v1.2.0-adaptive"

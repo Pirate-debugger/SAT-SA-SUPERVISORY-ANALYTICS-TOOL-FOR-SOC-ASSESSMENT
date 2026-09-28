@@ -5,7 +5,7 @@ from app.models.case import Case
 from app.models.analysis_run import AnalysisRun, CapabilityScore
 from app.models.finding import Finding, FindingEvidenceLink
 from app.models.ingestion import IngestionBatch
-from app.models.audit import AuditLog, ReviewItem
+from app.models.audit import AuditLog, ReviewItem, ExpertReviewLabel
 
 __all__ = [
     "Base",
@@ -22,4 +22,5 @@ __all__ = [
     "IngestionBatch",
     "AuditLog",
     "ReviewItem",
+    "ExpertReviewLabel",
 ]

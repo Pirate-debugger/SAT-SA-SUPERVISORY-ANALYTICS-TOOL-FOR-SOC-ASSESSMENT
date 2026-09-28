@@ -76,6 +76,9 @@ class AuditLogOut(BaseModel):
     event_hash: Optional[str] = None
 
 
+from app.time_utils import utc_now
+
+
 class AuditVerificationResult(BaseModel):
     verified: bool
     total_events: int
@@ -83,4 +86,5 @@ class AuditVerificationResult(BaseModel):
     root_hash: Optional[str] = None
     latest_hash: Optional[str] = None
     status: str
-    verification_timestamp: datetime = Field(default_factory=datetime.utcnow)
+    verification_timestamp: datetime = Field(default_factory=utc_now)
+

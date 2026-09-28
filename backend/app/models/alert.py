@@ -1,7 +1,7 @@
-from datetime import datetime
 from sqlalchemy import Column, String, Integer, Boolean, DateTime, ForeignKey, Text, Index
 from sqlalchemy.orm import relationship
 from app.database import Base
+from app.time_utils import utc_now
 
 
 class Alert(Base):
@@ -30,7 +30,7 @@ class Alert(Base):
     ingestion_batch_id = Column(String, nullable=True, index=True)
     provenance_id = Column(String, nullable=True, index=True)
     raw_data_json = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     entity = relationship("Entity", back_populates="alerts")
 

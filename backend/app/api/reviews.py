@@ -1,5 +1,4 @@
 import json
-from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -8,6 +7,7 @@ from app.database import get_db
 from app.models.audit import ReviewItem, AuditLog
 from app.models.finding import Finding
 from app.schemas.response import ReviewItemOut, ReviewActionRequest, AuditLogOut, AuditVerificationResult
+from app.time_utils import utc_now
 
 router = APIRouter(tags=["Review & Audit"])
 
@@ -66,29 +66,38 @@ def update_review_item(
 
     old_status = item.status
     
-    # Normalize review statuses
+    # Section 19: Strict review workflow
+    # Valid statuses: OPEN, UNDER_REVIEW, CONFIRMED, REJECTED, DEFERRED, REQUEST_EVIDENCE
+    # Do NOT automatically map REVIEWED -> CONFIRMED (Review is NOT confirmation!)
     status_mapping = {
-        "REVIEWED": "CONFIRMED",
+        "REVIEWED": "UNDER_REVIEW",
+        "IN_REVIEW": "UNDER_REVIEW",
         "VERIFIED": "CONFIRMED",
         "DISMISSED": "REJECTED",
         "ESCALATED": "REQUEST_EVIDENCE",
+        "HOLD": "DEFERRED",
+        "DEFER": "DEFERRED",
     }
-    normalized_status = status_mapping.get(action.status.upper(), action.status.upper())
+    raw_status = action.status.upper()
+    normalized_status = status_mapping.get(raw_status, raw_status)
     valid_statuses = {"OPEN", "UNDER_REVIEW", "CONFIRMED", "REJECTED", "DEFERRED", "REQUEST_EVIDENCE"}
     if normalized_status not in valid_statuses:
         normalized_status = "UNDER_REVIEW"
 
     item.status = normalized_status
+    now = utc_now()
+    item.updated_at = now
+
     if action.assigned_reviewer:
         item.assigned_reviewer = action.assigned_reviewer
     if action.notes:
         existing_notes = item.notes or ""
-        item.notes = f"{existing_notes}\n[{datetime.utcnow().strftime('%Y-%m-%d %H:%M')}] {action.notes}".strip()
+        item.notes = f"{existing_notes}\n[{now.strftime('%Y-%m-%d %H:%M UTC')}] {action.notes}".strip()
 
-    # Record past action
+    # Record past action in history
     history = json.loads(item.actions_history_json) if item.actions_history_json else []
     history.append({
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": now.isoformat(),
         "action": action.action_name,
         "old_status": old_status,
         "new_status": normalized_status,
@@ -97,15 +106,10 @@ def update_review_item(
     })
     item.actions_history_json = json.dumps(history)
 
-    # Sync finding status
+    # Sync finding status with explicit supervisor action
     f = db.query(Finding).filter(Finding.finding_id == item.finding_id).first()
     if f:
-        if normalized_status == "CONFIRMED":
-            f.status = "CONFIRMED"
-        elif normalized_status == "REJECTED":
-            f.status = "REJECTED"
-        elif normalized_status == "UNDER_REVIEW":
-            f.status = "UNDER_REVIEW"
+        f.status = normalized_status
 
     # Cryptographic Audit Log creation
     AuditLog.create_entry(
@@ -119,7 +123,8 @@ def update_review_item(
             "action": action.action_name,
             "old_status": old_status,
             "new_status": normalized_status,
-            "reviewer": item.assigned_reviewer
+            "reviewer": item.assigned_reviewer,
+            "note_appended": bool(action.notes)
         }
     )
     db.commit()
@@ -172,5 +177,5 @@ def verify_audit_integrity(db: Session = Depends(get_db)):
         root_hash=result["root_hash"],
         latest_hash=result["latest_hash"],
         status=result["status"],
-        verification_timestamp=datetime.utcnow()
+        verification_timestamp=utc_now()
     )
