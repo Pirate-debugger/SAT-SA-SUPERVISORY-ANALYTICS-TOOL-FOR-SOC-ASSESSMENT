@@ -36,3 +36,9 @@ def root():
         "docs_url": "/docs",
         "api_prefix": "/api"
     }
+
+
+@app.get("/health")
+@app.get("/api/health")
+def health_check():
+    return {"status": "HEALTHY", "mode": "AIR_GAPPED_OFFLINE_LOCAL"}
