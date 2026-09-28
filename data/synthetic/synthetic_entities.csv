@@ -1,0 +1,6 @@
+entity_id,name,sector,claimed_tier,monitored_asset_count,soc_model,contact_email
+CSE-POWER-01,National Power Dispatch Grid Authority,Energy & Power,Tier-1 Critical Sector Entity,85,In-house 24/7 Hybrid SOC,soc-supervision@grid-energy.demo.gov
+CSE-BANK-02,Apex Interbank Settlement & Clearing System,Financial Services,Tier-1 Critical Sector Entity,120,Outsourced 24/7 Managed SOC,sec-ops@apexbank.demo.fin
+CSE-HEALTH-03,National Hospital & Healthcare Information Network,Healthcare,Tier-2 Critical Sector Entity,65,Internal Dedicated SOC,cyber-safety@healthnet.demo.gov
+CSE-TRANS-04,Central Railway Operations & Signaling Network,Transportation,Tier-1 Critical Sector Entity,95,24/7 Integrated Transit SOC,soc-lead@trans-rail.demo.gov
+CSE-TELECOM-05,State Telecommunication Backbone & Fiber Infrastructure,Telecommunications,Tier-1 Critical Sector Entity,140,Shared Regional SOC,telecom-ops@statecom.demo.net
