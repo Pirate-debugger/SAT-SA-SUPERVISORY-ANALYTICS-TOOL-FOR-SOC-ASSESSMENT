@@ -26,7 +26,7 @@ def test_normalizer_severity_mapping():
     assert normalize_severity("sev1") == "CRITICAL"
     assert normalize_severity("high") == "HIGH"
     assert normalize_severity("p2") == "HIGH"
-    assert normalize_severity("unknown-sev") == "MEDIUM"
+    assert normalize_severity("unknown-sev") == "UNKNOWN"
 
 
 def test_normalizer_booleans():

@@ -42,6 +42,8 @@ class ReviewItemOut(BaseModel):
     review_id: str
     finding_id: str
     entity_id: str
+    assessment_period_id: Optional[str] = "2026-Q2"
+    run_id: Optional[str] = None
     priority: str
     status: str
     assigned_reviewer: Optional[str] = None
@@ -49,11 +51,13 @@ class ReviewItemOut(BaseModel):
     finding_reason: Optional[str] = None
     finding_category: Optional[str] = None
     finding_severity: Optional[str] = None
+    capability_dimension: Optional[str] = None
+    recommended_review_area: Optional[str] = None
     updated_at: datetime
 
 
 class ReviewActionRequest(BaseModel):
-    status: str  # OPEN, UNDER_REVIEW, REVIEWED, DISMISSED, ESCALATED
+    status: str  # OPEN, UNDER_REVIEW, CONFIRMED, REJECTED, DEFERRED, REQUEST_EVIDENCE
     assigned_reviewer: Optional[str] = None
     notes: Optional[str] = None
     action_name: str = "STATUS_UPDATE"
@@ -68,3 +72,15 @@ class AuditLogOut(BaseModel):
     entity_id: Optional[str] = None
     actor: str
     details: Optional[Dict[str, Any]] = None
+    previous_event_hash: Optional[str] = None
+    event_hash: Optional[str] = None
+
+
+class AuditVerificationResult(BaseModel):
+    verified: bool
+    total_events: int
+    tampered_events: List[int]
+    root_hash: Optional[str] = None
+    latest_hash: Optional[str] = None
+    status: str
+    verification_timestamp: datetime = Field(default_factory=datetime.utcnow)

@@ -10,8 +10,9 @@ class Alert(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     entity_id = Column(String, ForeignKey("entities.entity_id"), nullable=False, index=True)
     alert_id = Column(String, nullable=False, index=True)
+    assessment_period_id = Column(String, default="2026-Q2", index=True)
     alert_timestamp = Column(DateTime, nullable=False, index=True)
-    severity = Column(String, nullable=False, index=True)  # CRITICAL, HIGH, MEDIUM, LOW, INFORMATIONAL
+    severity = Column(String, nullable=False, index=True)  # CRITICAL, HIGH, MEDIUM, LOW, INFORMATIONAL, UNKNOWN
     category = Column(String, nullable=False, index=True)  # RANSOMWARE, BRUTE_FORCE, etc.
     source_system = Column(String, nullable=True)
     asset_id = Column(String, nullable=True, index=True)
@@ -25,8 +26,9 @@ class Alert(Base):
     root_cause_recorded = Column(Boolean, default=False)
     remediation_recorded = Column(Boolean, default=False)
     evidence_present = Column(Boolean, default=False)
-    status = Column(String, default="CLOSED")              # OPEN, CLOSED, IN_PROGRESS, ESCALATED
+    status = Column(String, default="CLOSED")              # OPEN, CLOSED, IN_PROGRESS, ESCALATED, UNKNOWN
     ingestion_batch_id = Column(String, nullable=True, index=True)
+    provenance_id = Column(String, nullable=True, index=True)
     raw_data_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -35,4 +37,5 @@ class Alert(Base):
     __table_args__ = (
         Index("ix_alerts_entity_timestamp", "entity_id", "alert_timestamp"),
         Index("ix_alerts_entity_severity", "entity_id", "severity"),
+        Index("ix_alerts_entity_period", "entity_id", "assessment_period_id"),
     )

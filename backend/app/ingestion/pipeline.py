@@ -1,12 +1,13 @@
 import csv
 import json
 import uuid
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Set
 from sqlalchemy.orm import Session
 
-from app.models.entity import Entity, Asset
+from app.models.entity import Entity, Asset, AssessmentPeriod, DatasetProvenance
 from app.models.alert import Alert
 from app.models.case import Case
 from app.models.ingestion import IngestionBatch
@@ -27,15 +28,63 @@ from app.ingestion.validator import (
 CHUNK_SIZE = 500
 
 
+def calculate_file_sha256(file_path: Path) -> str:
+    hasher = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def append_audit_event(
+    db: Session,
+    action: str,
+    actor: str,
+    entity_id: Optional[str],
+    details: Dict[str, Any]
+) -> AuditLog:
+    last_audit = db.query(AuditLog).order_by(AuditLog.id.desc()).first()
+    prev_hash = last_audit.event_hash if last_audit else "GENESIS_HASH_SAT_SA_2026"
+    ts = datetime.utcnow()
+    details_str = json.dumps(details)
+    ev_hash = AuditLog.calculate_hash(prev_hash, ts, action, actor, details_str)
+
+    entry = AuditLog(
+        timestamp=ts,
+        action=action,
+        entity_id=entity_id,
+        actor=actor,
+        details_json=details_str,
+        previous_event_hash=prev_hash,
+        event_hash=ev_hash
+    )
+    db.add(entry)
+    return entry
+
+
 def run_ingestion_pipeline(
     file_path: Path,
     db: Session,
     target_category: Optional[str] = None,
     column_mapping: Optional[Dict[str, str]] = None,
-    default_entity_id: Optional[str] = None
+    default_entity_id: Optional[str] = None,
+    assessment_period_id: str = "2026-Q2"
 ) -> IngestionValidationReport:
     batch_id = f"BATCH-{uuid.uuid4().hex[:10].upper()}"
     file_type = detect_file_type(file_path)
+    file_hash = calculate_file_sha256(file_path)
+
+    # Ensure period exists
+    period = db.query(AssessmentPeriod).filter(AssessmentPeriod.period_id == assessment_period_id).first()
+    if not period:
+        db.add(AssessmentPeriod(
+            period_id=assessment_period_id,
+            name=f"Assessment Period {assessment_period_id}",
+            start_date=datetime(2026, 1, 1),
+            end_date=datetime(2026, 6, 30),
+            is_active=True
+        ))
+        db.flush()
 
     if file_type not in ["CSV", "JSON"]:
         report = IngestionValidationReport(
@@ -134,8 +183,8 @@ def run_ingestion_pipeline(
     valid_count = 0
     invalid_count = 0
     duplicate_count = 0
+    unknown_values_count = 0
 
-    # Cache entities to ensure foreign keys exist
     known_entities: Set[str] = {e[0] for e in db.query(Entity.entity_id).all()}
 
     for idx, raw_row in enumerate(raw_records, start=1):
@@ -146,13 +195,23 @@ def run_ingestion_pipeline(
             default_entity_id=default_entity_id
         )
 
+        row_period = raw_row.get("assessment_period_id") or assessment_period_id
+
         if target_category == "ALERT":
-            canonical_obj, error_dict, row_warnings = validate_and_normalize_alert(canonical_dict, idx, seen_ids)
+            canonical_obj, error_dict, row_warnings = validate_and_normalize_alert(
+                canonical_dict, idx, seen_ids, default_period_id=row_period
+            )
+            if canonical_obj and (canonical_obj.severity == "UNKNOWN" or canonical_obj.status == "UNKNOWN"):
+                unknown_values_count += 1
         else:
-            canonical_obj, error_dict, row_warnings = validate_and_normalize_case(canonical_dict, idx, seen_ids)
+            canonical_obj, error_dict, row_warnings = validate_and_normalize_case(
+                canonical_dict, idx, seen_ids, default_period_id=row_period
+            )
+            if canonical_obj and canonical_obj.disposition == "UNKNOWN":
+                unknown_values_count += 1
 
         if row_warnings:
-            all_warnings.extend(row_warnings[:2])  # Keep warnings bounded
+            all_warnings.extend(row_warnings[:2])
 
         if error_dict:
             invalid_count += 1
@@ -163,13 +222,12 @@ def run_ingestion_pipeline(
         elif canonical_obj:
             valid_count += 1
             eid = canonical_obj.entity_id
-            # Ensure entity exists in DB
             if eid not in known_entities:
                 new_ent = Entity(
                     entity_id=eid,
                     name=f"Entity {eid}",
-                    sector="Unknown Sector",
-                    claimed_tier="Standard CSE"
+                    sector="Critical Infrastructure",
+                    claimed_tier="Tier-1 Critical Sector Entity"
                 )
                 db.add(new_ent)
                 known_entities.add(eid)
@@ -178,6 +236,7 @@ def run_ingestion_pipeline(
                 alert_db = Alert(
                     entity_id=canonical_obj.entity_id,
                     alert_id=canonical_obj.alert_id,
+                    assessment_period_id=canonical_obj.assessment_period_id,
                     alert_timestamp=canonical_obj.alert_timestamp,
                     severity=canonical_obj.severity,
                     category=canonical_obj.category,
@@ -195,6 +254,7 @@ def run_ingestion_pipeline(
                     evidence_present=canonical_obj.evidence_present,
                     status=canonical_obj.status,
                     ingestion_batch_id=batch_id,
+                    provenance_id=file_hash[:16],
                     raw_data_json=json.dumps(canonical_obj.raw_data) if canonical_obj.raw_data else None
                 )
                 valid_alert_models.append(alert_db)
@@ -202,6 +262,7 @@ def run_ingestion_pipeline(
                 case_db = Case(
                     entity_id=canonical_obj.entity_id,
                     case_id=canonical_obj.case_id,
+                    assessment_period_id=canonical_obj.assessment_period_id,
                     alert_id=canonical_obj.alert_id,
                     created_at=canonical_obj.created_at,
                     assigned_at=canonical_obj.assigned_at,
@@ -215,7 +276,8 @@ def run_ingestion_pipeline(
                     evidence=canonical_obj.evidence,
                     investigator=canonical_obj.investigator,
                     closure_reason=canonical_obj.closure_reason,
-                    ingestion_batch_id=batch_id
+                    ingestion_batch_id=batch_id,
+                    provenance_id=file_hash[:16]
                 )
                 valid_case_models.append(case_db)
 
@@ -227,40 +289,66 @@ def run_ingestion_pipeline(
         for i in range(0, len(valid_case_models), CHUNK_SIZE):
             db.bulk_save_objects(valid_case_models[i:i + CHUNK_SIZE])
 
-    # 7. Record Ingestion Batch & Audit Log
+    # 7. Compute Data Quality Percentage
+    penalty = (invalid_count * 1.0) + (unknown_values_count * 0.5)
+    data_quality_pct = max(0.0, round(((total_records - penalty) / max(total_records, 1)) * 100.0, 1))
+
+    # 8. Record Dataset Provenance
+    prov = DatasetProvenance(
+        provenance_id=file_hash[:16],
+        filename=file_path.name,
+        file_hash=file_hash,
+        source_name=default_entity_id or "Multi-Entity-Submission",
+        assessment_period_id=assessment_period_id,
+        record_count=valid_count,
+        data_quality_pct=data_quality_pct,
+        unknown_fields_summary_json=json.dumps({"unknown_values": unknown_values_count, "missing_fields": missing_fields})
+    )
+    db.add(prov)
+
+    # 9. Record Ingestion Batch
     status = "SUCCESS" if invalid_count == 0 else ("PARTIAL_SUCCESS" if valid_count > 0 else "FAILED")
-    msg = f"Processed {total_records} records: {valid_count} valid, {invalid_count} rejected ({duplicate_count} duplicates)."
+    msg = (
+        f"Processed {total_records} records: {valid_count} valid, {invalid_count} rejected ({duplicate_count} duplicates). "
+        f"Data Quality: {data_quality_pct}% ({unknown_values_count} unknown values)."
+    )
 
     batch_record = IngestionBatch(
         batch_id=batch_id,
         filename=file_path.name,
         file_type=file_type,
+        file_hash=file_hash,
         entity_id=default_entity_id,
+        assessment_period_id=assessment_period_id,
         status=status,
         total_records=total_records,
         valid_records=valid_count,
         invalid_records=invalid_count,
         duplicate_records=duplicate_count,
+        data_quality_pct=data_quality_pct,
+        unknown_values_count=unknown_values_count,
         missing_fields_json=json.dumps(missing_fields),
         normalization_warnings_json=json.dumps(all_warnings[:50]),
         invalid_records_sample_json=json.dumps(invalid_samples)
     )
     db.add(batch_record)
 
-    audit_entry = AuditLog(
+    # 10. Audit Log with cryptographic hash chaining
+    append_audit_event(
+        db=db,
         action="DATA_INGESTION",
         actor="SUPERVISOR",
-        details_json=json.dumps({
+        entity_id=default_entity_id,
+        details={
             "batch_id": batch_id,
             "filename": file_path.name,
+            "file_hash": file_hash,
             "status": status,
             "valid_records": valid_count,
             "invalid_records": invalid_count,
-            "duplicates": duplicate_count,
-            "target_category": target_category
-        })
+            "data_quality_pct": data_quality_pct
+        }
     )
-    db.add(audit_entry)
 
     db.commit()
 

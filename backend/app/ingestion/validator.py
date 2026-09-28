@@ -14,14 +14,14 @@ REQUIRED_CASE_FIELDS = ["entity_id", "case_id", "created_at"]
 def validate_and_normalize_alert(
     raw_dict: Dict[str, Any],
     row_idx: int,
-    seen_alert_ids: Set[str]
+    seen_alert_ids: Set[str],
+    default_period_id: str = "2026-Q2"
 ) -> Tuple[Optional[AlertCanonical], Optional[Dict[str, Any]], List[str]]:
     """
     Returns (canonical_alert, error_dict, warnings)
     """
     warnings: List[str] = []
 
-    # Check required fields
     entity_id = raw_dict.get("entity_id")
     if not entity_id or str(entity_id).strip() == "":
         return None, {
@@ -68,16 +68,21 @@ def validate_and_normalize_alert(
     closed_ts = parse_datetime(raw_dict.get("closed_timestamp"))
     esc_ts = parse_datetime(raw_dict.get("escalation_timestamp"))
 
-    # Logic date order warnings
     if ack_ts and alert_timestamp and ack_ts < alert_timestamp:
         warnings.append(f"Row {row_idx}: acknowledged_timestamp is earlier than alert_timestamp.")
     if closed_ts and alert_timestamp and closed_ts < alert_timestamp:
         warnings.append(f"Row {row_idx}: closed_timestamp is earlier than alert_timestamp.")
 
-    # Categorical normalization
+    # Categorical normalization - preserves UNKNOWN!
     severity = normalize_severity(raw_dict.get("severity"))
+    if severity == "UNKNOWN":
+        warnings.append(f"Row {row_idx}: Unrecognized severity '{raw_dict.get('severity')}', recorded as UNKNOWN.")
+
     category = normalize_category(raw_dict.get("category"))
     status = normalize_status(raw_dict.get("status"))
+    if status == "UNKNOWN":
+        warnings.append(f"Row {row_idx}: Unrecognized status '{raw_dict.get('status')}', recorded as UNKNOWN.")
+
     disposition = normalize_disposition(raw_dict.get("disposition"))
 
     # Booleans
@@ -86,10 +91,13 @@ def validate_and_normalize_alert(
     remediation = normalize_boolean(raw_dict.get("remediation_recorded")) or False
     evidence = normalize_boolean(raw_dict.get("evidence_present")) or False
 
+    period_id = str(raw_dict.get("assessment_period_id") or default_period_id).strip()
+
     try:
         canonical = AlertCanonical(
             entity_id=str(entity_id).strip(),
             alert_id=alert_id_str,
+            assessment_period_id=period_id,
             alert_timestamp=alert_timestamp,
             severity=severity,
             category=category,
@@ -121,7 +129,8 @@ def validate_and_normalize_alert(
 def validate_and_normalize_case(
     raw_dict: Dict[str, Any],
     row_idx: int,
-    seen_case_ids: Set[str]
+    seen_case_ids: Set[str],
+    default_period_id: str = "2026-Q2"
 ) -> Tuple[Optional[CaseCanonical], Optional[Dict[str, Any]], List[str]]:
     """
     Returns (canonical_case, error_dict, warnings)
@@ -173,11 +182,13 @@ def validate_and_normalize_case(
     esc_ts = parse_datetime(raw_dict.get("escalation_timestamp"))
 
     disposition = normalize_disposition(raw_dict.get("disposition"))
+    period_id = str(raw_dict.get("assessment_period_id") or default_period_id).strip()
 
     try:
         canonical = CaseCanonical(
             entity_id=str(entity_id).strip(),
             case_id=case_id_str,
+            assessment_period_id=period_id,
             alert_id=str(raw_dict.get("alert_id")).strip() if raw_dict.get("alert_id") else None,
             created_at=created_at,
             assigned_at=assigned_at,

@@ -16,7 +16,8 @@ EXPECTED_CORE_CATEGORIES = ["MALWARE", "RANSOMWARE", "UNAUTHORIZED_ACCESS", "DAT
 def evaluate_negative_space_for_entity(
     db: Session,
     run_id: str,
-    entity_id: str
+    entity_id: str,
+    assessment_period_id: str = "2026-Q2"
 ) -> List[Tuple[Finding, List[FindingEvidenceLink]]]:
     findings_with_evidence: List[Tuple[Finding, List[FindingEvidenceLink]]] = []
 
@@ -25,11 +26,9 @@ def evaluate_negative_space_for_entity(
         return findings_with_evidence
 
     # 1. Telemetry / Monitored Asset Coverage Gap (Asset Silence)
-    # Check declared assets
     declared_assets = db.query(Asset).filter(Asset.entity_id == entity_id).all()
     expected_count = entity.monitored_asset_count or len(declared_assets) or 1
 
-    # Check distinct assets producing alerts
     reporting_assets_query = db.query(Alert.asset_id).filter(
         Alert.entity_id == entity_id,
         Alert.asset_id.isnot(None)
@@ -47,19 +46,24 @@ def evaluate_negative_space_for_entity(
                 finding_id=fnd_id,
                 run_id=run_id,
                 entity_id=entity_id,
+                assessment_period_id=assessment_period_id,
                 finding_type="CRITICAL_ASSET_TELEMETRY_SILENCE",
+                capability_dimension="CYBER_RESILIENCE",
                 category="NEGATIVE_SPACE",
                 severity="CRITICAL" if coverage_gap_pct > 50 else "HIGH",
                 confidence=0.96,
                 reason=(
-                    f"Substantial monitoring blind spot detected. Entity declared {expected_count} monitored critical assets, "
-                    f"but only {observed_count} assets produced any security alerts or log evidence during the assessment period. "
-                    f"Coverage Gap: {coverage_gap_pct:.1f}%."
+                    f"MONITORING COVERAGE GAP: Entity declared {expected_count} monitored critical assets, "
+                    f"but only {observed_count} assets produced any security telemetry during the assessment period. "
+                    f"Coverage Gap: {coverage_gap_pct:.1f}% ({expected_count - observed_count} silent critical hosts). "
+                    f"POTENTIAL NEGATIVE SPACE indicates unmonitored attack surface rather than absence of threats."
                 ),
                 evidence_summary=(
                     f"EXPECTED: {expected_count} monitored assets | OBSERVED: {observed_count} active reporting assets | "
                     f"GAP: {coverage_gap_pct:.1f}% ({expected_count - observed_count} silent assets)."
                 ),
+                observed_value_json=json.dumps({"reporting_assets": observed_count, "coverage_gap_pct": round(coverage_gap_pct, 1)}),
+                expected_value_json=json.dumps({"expected_monitored_assets": expected_count, "target_telemetry_rate": ">= 85.0%"}),
                 metric_values_json=json.dumps({
                     "expected_assets": expected_count,
                     "observed_reporting_assets": observed_count,
@@ -70,6 +74,7 @@ def evaluate_negative_space_for_entity(
                     "expected_telemetry_rate": ">= 85.0%",
                     "acceptable_coverage_gap_max": "15.0%"
                 }),
+                recommended_review_area="Conduct audit of sensor deployment, syslog forwarders, and network TAP tap-points on silent infrastructure.",
                 sample_size=len(silent_assets),
                 status="NEW"
             )
@@ -101,20 +106,23 @@ def evaluate_negative_space_for_entity(
             finding_id=fnd_id,
             run_id=run_id,
             entity_id=entity_id,
+            assessment_period_id=assessment_period_id,
             finding_type="EXPECTED_ALERT_CATEGORY_ABSENT",
+            capability_dimension="THREAT_DETECTION",
             category="NEGATIVE_SPACE",
             severity="HIGH",
             confidence=0.88,
             reason=(
-                f"Core attack categories {missing_categories} were entirely absent from {total_alerts} ingested alerts. "
-                f"For a {entity.claimed_tier}, absence of these categories signals sensor misconfiguration "
-                f"or suppressed threat signatures rather than total absence of hostile activity."
+                f"POTENTIAL NEGATIVE SPACE: Core attack categories {missing_categories} were entirely absent from {total_alerts} ingested alerts. "
+                f"For a {entity.claimed_tier}, absence of these signatures indicates detection blind spots or disabled rulesets."
             ),
             evidence_summary=(
                 f"EXPECTED: Presence of {EXPECTED_CORE_CATEGORIES} signatures | "
                 f"OBSERVED: {len(observed_categories)} categories active | "
                 f"GAP: 0 records observed for {missing_categories}."
             ),
+            observed_value_json=json.dumps({"absent_categories": missing_categories, "active_categories_count": len(observed_categories)}),
+            expected_value_json=json.dumps({"mandatory_categories": EXPECTED_CORE_CATEGORIES}),
             metric_values_json=json.dumps({
                 "missing_categories": missing_categories,
                 "observed_categories_count": len(observed_categories),
@@ -124,6 +132,7 @@ def evaluate_negative_space_for_entity(
                 "expected_categories": EXPECTED_CORE_CATEGORIES,
                 "peer_prevalence": "Present in 95%+ of peer entities"
             }),
+            recommended_review_area="Verify SIEM detection rule activation status for endpoint ransomware and egress data exfiltration.",
             sample_size=len(missing_categories),
             status="NEW"
         )

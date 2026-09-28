@@ -6,7 +6,7 @@ from app.schemas.analysis import (
 )
 from app.schemas.response import (
     DashboardSummary, EntitySupervisoryCard, ReviewItemOut,
-    ReviewActionRequest, AuditLogOut
+    ReviewActionRequest, AuditLogOut, AuditVerificationResult
 )
 
 __all__ = [
@@ -27,4 +27,5 @@ __all__ = [
     "ReviewItemOut",
     "ReviewActionRequest",
     "AuditLogOut",
+    "AuditVerificationResult",
 ]

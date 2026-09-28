@@ -38,6 +38,11 @@ SEVERITY_MAP = {
     "p5": "INFORMATIONAL",
     "info": "INFORMATIONAL",
     "informational": "INFORMATIONAL",
+
+    "unknown": "UNKNOWN",
+    "n/a": "UNKNOWN",
+    "none": "UNKNOWN",
+    "": "UNKNOWN",
 }
 
 STATUS_MAP = {
@@ -53,6 +58,10 @@ STATUS_MAP = {
     "completed": "CLOSED",
     "dismissed": "CLOSED",
     "escalated": "ESCALATED",
+    "unknown": "UNKNOWN",
+    "n/a": "UNKNOWN",
+    "none": "UNKNOWN",
+    "": "UNKNOWN",
 }
 
 DISPOSITION_MAP = {
@@ -80,10 +89,8 @@ def parse_datetime(val: Any) -> Optional[datetime]:
     s = str(val).strip()
     if not s or s.lower() in ["none", "null", "n/a", "nat", "nan", ""]:
         return None
-    # Handle unix epoch integer/float
     if s.isdigit():
         epoch = int(s)
-        # If milliseconds epoch
         if epoch > 10_000_000_000:
             return datetime.utcfromtimestamp(epoch / 1000.0)
         return datetime.utcfromtimestamp(epoch)
@@ -94,17 +101,25 @@ def parse_datetime(val: Any) -> Optional[datetime]:
 
 
 def normalize_severity(val: Any) -> str:
+    """
+    Normalizes severity without silently converting unknown values into MEDIUM.
+    Unknown must remain UNKNOWN.
+    """
     if val is None:
-        return "MEDIUM"
+        return "UNKNOWN"
     s = str(val).strip().lower()
-    return SEVERITY_MAP.get(s, "MEDIUM")
+    return SEVERITY_MAP.get(s, "UNKNOWN")
 
 
 def normalize_status(val: Any) -> str:
+    """
+    Normalizes status without silently converting unknown values into CLOSED.
+    Unknown must remain UNKNOWN.
+    """
     if val is None:
-        return "CLOSED"
+        return "UNKNOWN"
     s = str(val).strip().lower()
-    return STATUS_MAP.get(s, "CLOSED")
+    return STATUS_MAP.get(s, "UNKNOWN")
 
 
 def normalize_disposition(val: Any) -> Optional[str]:
@@ -113,7 +128,7 @@ def normalize_disposition(val: Any) -> Optional[str]:
     s = str(val).strip().lower().replace(" ", "_")
     if not s or s in ["none", "null", "n/a"]:
         return None
-    return DISPOSITION_MAP.get(s, s.upper())
+    return DISPOSITION_MAP.get(s, "UNKNOWN")
 
 
 def normalize_boolean(val: Any) -> Optional[bool]:
@@ -131,6 +146,6 @@ def normalize_boolean(val: Any) -> Optional[bool]:
 
 def normalize_category(val: Any) -> str:
     if val is None:
-        return "UNKNOWN_ALERT"
+        return "UNKNOWN_CATEGORY"
     s = str(val).strip().upper().replace(" ", "_").replace("-", "_")
-    return s if s else "UNKNOWN_ALERT"
+    return s if s else "UNKNOWN_CATEGORY"

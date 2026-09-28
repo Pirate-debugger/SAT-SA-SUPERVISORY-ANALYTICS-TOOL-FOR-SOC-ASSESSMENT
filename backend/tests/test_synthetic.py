@@ -24,8 +24,8 @@ def test_synthetic_data_structure():
     bank_alerts = [a for a in alerts if a["entity_id"] == "CSE-BANK-02" and a["severity"] in ["CRITICAL", "HIGH"]]
     assert len(bank_alerts) > 0
 
-    # CSE-TELECOM-05 negative space
-    telecom_alerts = [a for a in alerts if a["entity_id"] == "CSE-TELECOM-05"]
+    # CSE-TELECOM-05 negative space in 2026-Q2
+    telecom_alerts = [a for a in alerts if a["entity_id"] == "CSE-TELECOM-05" and a.get("assessment_period_id") == "2026-Q2"]
     telecom_categories = {a["category"] for a in telecom_alerts}
     # RANSOMWARE should be absent (Planted Negative Space)
     assert "RANSOMWARE" not in telecom_categories

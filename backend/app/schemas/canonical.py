@@ -3,6 +3,16 @@ from typing import Optional, Any, Dict
 from pydantic import BaseModel, Field, ConfigDict
 
 
+class AssessmentPeriodBase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    period_id: str
+    name: str
+    start_date: datetime
+    end_date: datetime
+    is_active: bool = True
+
+
 class EntityBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -33,8 +43,9 @@ class AlertCanonical(BaseModel):
 
     entity_id: str
     alert_id: str
+    assessment_period_id: Optional[str] = "2026-Q2"
     alert_timestamp: datetime
-    severity: str  # CRITICAL, HIGH, MEDIUM, LOW, INFORMATIONAL
+    severity: str  # CRITICAL, HIGH, MEDIUM, LOW, INFORMATIONAL, UNKNOWN
     category: str  # RANSOMWARE, BRUTE_FORCE, DATA_EXFILTRATION, etc.
     source_system: Optional[str] = None
     asset_id: Optional[str] = None
@@ -48,7 +59,7 @@ class AlertCanonical(BaseModel):
     root_cause_recorded: Optional[bool] = False
     remediation_recorded: Optional[bool] = False
     evidence_present: Optional[bool] = False
-    status: Optional[str] = "CLOSED"  # OPEN, CLOSED, IN_PROGRESS, ESCALATED
+    status: Optional[str] = "CLOSED"  # OPEN, CLOSED, IN_PROGRESS, ESCALATED, UNKNOWN
     raw_data: Optional[Dict[str, Any]] = None
 
 
@@ -57,6 +68,7 @@ class CaseCanonical(BaseModel):
 
     entity_id: str
     case_id: str
+    assessment_period_id: Optional[str] = "2026-Q2"
     alert_id: Optional[str] = None
     created_at: datetime
     assigned_at: Optional[datetime] = None
